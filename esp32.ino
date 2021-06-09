@@ -196,7 +196,7 @@ String sendCapturedImage2LineNotify(String Token)
     String stringvva = String(vva);
     String temc= String(temperatureC);
     String humh= String(humidityH);
-    String message = "目前一氧化碳:" + stringvva + "ppm，溫度:" + temc + "*C，濕度:"+ humh + "%" + "已達到危險值!!";
+    String message = "目前一氧化碳:" + stringvva + "ppm，溫度:" + temc + "*C，濕度:"+ humh + "%" + "已超過危險值!!";
     String head = "--Taiwan\r\nContent-Disposition: form-data; name=\"message\"; \r\n\r\n" + message + "\r\n--Taiwan\r\nContent-Disposition: form-data; name=\"imageFile\"; filename=\"esp32-cam.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
     String tail = "\r\n--Taiwan--\r\n";
 
