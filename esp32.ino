@@ -1,34 +1,62 @@
+// This is an example of implementation using ESP8266
+// Never connect the sensor direct to the ESP8266, sensor high level is 5V
+// ADC of ESP8266 high level is 3.3
+// To connect use a voltage divisor, where 5V will 3v3 on the middle point like
+// this {{URL}}
+
+/*
+  MQUnifiedsensor Library - reading an MQSensor using ESP8266 board
+  For this example wi will demonstrates the use a MQ3 sensor.
+  Library originally added 01 may 2019
+  by Miguel A Califa, Yersson Carrillo, Ghiordy Contreras, Mario Rodriguez
+ 
+  Added ESP8266 example 
+  29.03.2020
+  Wiring:
+  https://github.com/miguel5612/MQSensorsLib_Docs/blob/master/static/img/MQ_ESP8266.PNG
+
+ This example code is in the public domain.
+
+*/
+
+//Include the library
 byte temperature;
 byte humidity;
 float humidityH;
 float vva;
 float temperatureC;
-const char* ssid     = "Bang";   //Wi-Fi帳號
+const char* ssid     = "My Home";   //Wi-Fi帳號
 const char* password = "yike1234";   //Wi-Fi密碼
 String myToken = "ldpIzR1aT4NxrblD3sqQhUqS2kQRsFpzbMnrh09z9uU";
+String url= "http://api.thingspeak.com/update?api_key=NTACXJGLYM2CIUB5";
 uint64_t reg_b;
 int pinDHT11 = 13;
 #include <MQUnifiedsensor.h>
-#define Board                   ("ESP-32")
-#define Pin                     (2)
-#define Type                    ("MQ-7")
-#define Voltage_Resolution      (3.3)
-#define ADC_Bit_Resolution      (12)
-#define RatioMQ3CleanAir        (60)
+/************************Hardware Related Macros************************************/
+#define         Board                   ("ESP-32") // Wemos ESP-32 or other board, whatever have ESP32 core.
+#define         Pin                     (2)  //IO25 for your ESP32 WeMos Board, pinout here: https://i.pinimg.com/originals/66/9a/61/669a618d9435c702f4b67e12c40a11b8.jpg
+/***********************Software Related Macros************************************/
+#define         Type                    ("MQ-7") //MQ3 or other MQ Sensor, if change this verify your a and b values.
+#define         Voltage_Resolution      (3.3) // 3V3 <- IMPORTANT. Source: https://randomnerdtutorials.com/esp32-adc-analog-read-arduino-ide/
+#define         ADC_Bit_Resolution      (12) // ESP-32 bit resolution. Source: https://randomnerdtutorials.com/esp32-adc-analog-read-arduino-ide/
+#define         RatioMQ3CleanAir        (60) // Ratio of your sensor, for this example an MQ-3
+/*****************************Globals***********************************************/
 MQUnifiedsensor MQ7(Board, Voltage_Resolution, ADC_Bit_Resolution, Pin, Type);
+/*****************************Globals***********************************************/
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <SimpleDHT.h>
+#include <HTTPClient.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
 #include "esp_camera.h"
 #include "soc/sens_reg.h"
-
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
 #define XCLK_GPIO_NUM      0
 #define SIOD_GPIO_NUM     26
 #define SIOC_GPIO_NUM     27
+
 #define Y9_GPIO_NUM       35
 #define Y8_GPIO_NUM       34
 #define Y7_GPIO_NUM       39
@@ -41,15 +69,24 @@ MQUnifiedsensor MQ7(Board, Voltage_Resolution, ADC_Bit_Resolution, Pin, Type);
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 SimpleDHT11 dht11(pinDHT11);
+int freq = 2000;
+int channel = 0;
+int resolutio = 8;
 
 void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);  //關閉電壓不穩時重啟電源設定
   reg_b = READ_PERI_REG(SENS_SAR_READ_CTRL2_REG);
-  Serial.begin(115200);
+  //Init the serial port communication - to debug the library
+  Serial.begin(115200); //Init serial port
+
+  //Set math model to calculate the PPM concentration and the value of constants
+  ledcSetup(channel, freq, resolutio);
+  ledcAttachPin(4, channel);
   pinMode(15,OUTPUT);
   pinMode(14,OUTPUT);
-  MQ7.setRegressionMethod(1);
-  MQ7.setA(521853); MQ7.setB(-3.821);
+  digitalWrite(14, HIGH);
+  MQ7.setRegressionMethod(1); //_PPM =  a*ratio^b
+  MQ7.setA(521853); MQ7.setB(-3.821); // Configurate the ecuation values to get Benzene concentration
   /*
     Exponential regression:
   Gas    | a      | b
@@ -60,27 +97,45 @@ void setup() {
   Benzene| 4.8387 | -2.68
   Hexane | 7585.3 | -2.849
   */
+
+  /*****************************  MQ Init ********************************************/ 
+  //Remarks: Configure the pin of arduino as input.
+  /************************************************************************************/ 
   MQ7.init(); 
-  Serial.print("MQ7校正中");
+ 
+  /* 
+    //If the RL value is different from 10K please assign your RL value with the following method:
+    MQ3.setRL(10);
+  */
+  /*****************************  MQ CAlibration ********************************************/ 
+  // Explanation: 
+  // In this routine the sensor will measure the resistance of the sensor supposing before was pre-heated
+  // and now is on clean air (Calibration conditions), and it will setup R0 value.
+  // We recomend execute this routine only on setup or on the laboratory and save on the eeprom of your arduino
+  // This routine not need to execute to every restart, you can load your R0 if you know the value
+  // Acknowledgements: https://jayconsystems.com/blog/understanding-a-gas-sensor
+  Serial.print("Calibrating please wait.");
   float calcR0 = 0;
   for(int i = 1; i<=10; i ++)
   {
-    MQ7.update();
+    MQ7.update(); // Update data, the arduino will be read the voltage on the analog pin
     calcR0 += MQ7.calibrate(RatioMQ3CleanAir);
     Serial.print(".");
   }
   MQ7.setR0(calcR0/10);
-  Serial.println("MQ7校正完成");
+  Serial.println("  done!.");
   
-  if(isinf(calcR0)) {Serial.println("MQ7短路,請檢查線路是否接好"); while(1);}
-  if(calcR0 == 0){Serial.println("MQ7短路,請檢查線路是否接好"); while(1);}
+  if(isinf(calcR0)) {Serial.println("Warning: Conection issue founded, R0 is infite (Open circuit detected) please check your wiring and supply"); while(1);}
+  if(calcR0 == 0){Serial.println("Warning: Conection issue founded, R0 is zero (Analog pin with short circuit to ground) please check your wiring and supply"); while(1);}
+  /*****************************  MQ CAlibration ********************************************/ 
   MQ7.serialDebug(true);
-  //wifi-------------------------------------------------------------------------------------------------
   WiFi.mode(WIFI_STA);
+
   Serial.println("");
   Serial.print("Connecting to ");
   Serial.println(ssid);
   WiFi.begin(ssid, password);  
+  
   long int StartTime=millis();
   while (WiFi.status() != WL_CONNECTED) 
   {
@@ -97,8 +152,9 @@ void setup() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Reset");
     delay(1000);
-    ESP.restart();  //若未連上Wi-Fi則重啟
+    ESP.restart();
   }
+
 camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -137,7 +193,7 @@ camera_config_t config;
   }
   sensor_t * s = esp_camera_sensor_get();
   s->set_framesize(s, FRAMESIZE_VGA);  // XGA|SVGA|VGA|CIF|QVGA|HQVGA|QQVGA
-//測試傳送影像至Line Notify，一小時最多上傳50張照片------------------------------------------------------------------------
+//測試傳送影像至Line Notify，一小時最多上傳50張照片。
   sendCapturedImage2LineNotify(myToken);
   Serial.println();
 }
@@ -148,10 +204,10 @@ void loop() {
   SET_PERI_REG_MASK(SENS_SAR_READ_CTRL2_REG, SENS_SAR2_DATA_INV);
   temperature = 0;
   humidity = 0;
-  MQ7.update();
-  MQ7.readSensor();
-  MQ7.serialDebug();
-  delay(500);
+  MQ7.update(); // Update data, the arduino will be read the voltage on the analog pin
+  MQ7.readSensor(); // Sensor will read PPM concentration using the model and a and b values setted before or in the setup
+  MQ7.serialDebug(); // Will print the table on the serial port
+  delay(500); //Sampling frequency
   vva = float(MQ7.readSensor());
   int err = SimpleDHTErrSuccess;
   if ((err = dht11.read(&temperature, &humidity, NULL)) != SimpleDHTErrSuccess) {
@@ -159,19 +215,38 @@ void loop() {
     return;
   }
   Serial.print("Sample OK: ");
+  Serial.print((int)temperature); Serial.print(" *C, "); 
+  Serial.print((int)humidity); Serial.println(" H");
   temperatureC=temperature;
   humidityH=humidity;
-  Serial.print(temperatureC); Serial.print(" *C, "); 
-  Serial.print(humidityH); Serial.println(" H");  
-  delay(1000);
-  if (vva>=10 or temperatureC>=50) {
+  HTTPClient http;
+  String url1 = url + "&field1=" + (int)temperature + "&field2=" + (int)humidity + "&field3=" + vva;
+  http.begin(url1);
+  int httpCode = http.GET();
+  if (httpCode == HTTP_CODE_OK)      {
+    //讀取網頁內容到payload
+    String payload = http.getString();
+    //將內容顯示出來
+    Serial.print("網頁內容=");
+    Serial.println(payload);
+  } else {
+    //讀取失敗
+    Serial.println("網路傳送失敗");
+  }
+  http.end();
+  if (vva>=10 or temperatureC>=39) {
     digitalWrite(15, HIGH);
+    ledcWriteTone(channel, 2000);
     sendCapturedImage2LineNotify(myToken);  //不顯示傳送結果
     //Serial.println(sendCapturedImage2LineNotify(myToken));  //顯示傳送結果
-    delay(30000);
+    delay(70000);
   }
-  delay(1000); 
+  delay(1000);
+  ledcWriteTone(channel,0);
+  digitalWrite(15, LOW);  
+  delay(20000);//休息20秒
 }
+
 String sendCapturedImage2LineNotify(String Token)
 {
   String getAll="", getBody = "";
@@ -179,24 +254,23 @@ String sendCapturedImage2LineNotify(String Token)
   camera_fb_t * fb = NULL;
   fb = esp_camera_fb_get();  
   if(!fb) {
-    Serial.println("相機擷取失敗");
+    Serial.println("Camera capture failed");
     delay(1000);
     ESP.restart();
-    return "相機擷取失敗";
+    return "Camera capture failed";
   }
    
   WiFiClientSecure client_tcp;
 
-  Serial.println("正在連接:notify-api.line.me");
+  Serial.println("Connect to notify-api.line.me");
   
   if (client_tcp.connect("notify-api.line.me", 443)) 
   {
-    digitalWrite(14, HIGH);
-    Serial.println("連接成功");
+    Serial.println("Connection successful");
     String stringvva = String(vva);
     String temc= String(temperatureC);
     String humh= String(humidityH);
-    String message = "目前一氧化碳:" + stringvva + "ppm，溫度:" + temc + "*C，濕度:"+ humh + "%" + "已超過危險值!!";
+    String message = "目前一氧化碳:" + stringvva + "ppm，溫度:" + temc + "*C，濕度:"+ humh + "%" + "已達到危險值!!";
     String head = "--Taiwan\r\nContent-Disposition: form-data; name=\"message\"; \r\n\r\n" + message + "\r\n--Taiwan\r\nContent-Disposition: form-data; name=\"imageFile\"; filename=\"esp32-cam.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n";
     String tail = "\r\n--Taiwan--\r\n";
 
@@ -229,7 +303,7 @@ String sendCapturedImage2LineNotify(String Token)
     client_tcp.print(tail);
     esp_camera_fb_return(fb);
     
-    int waitTime = 10000;
+    int waitTime = 10000;   // timeout 10 seconds
     long startTime = millis();
     boolean state = false;
     
@@ -254,11 +328,12 @@ String sendCapturedImage2LineNotify(String Token)
     }
     client_tcp.stop();
     Serial.println(getBody);
-    digitalWrite(14,LOW);
   }
   else {
-    getBody="連接失敗:notify-api.line.me";
-    Serial.println("連接失敗:notify-api.line.me");
+    getBody="Connected to notify-api.line.me failed.";
+    Serial.println("Connected to notify-api.line.me failed.");
   }
   return getBody;
+  client_tcp.stop();
+  
 }
